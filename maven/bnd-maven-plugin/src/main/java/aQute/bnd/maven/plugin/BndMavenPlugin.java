@@ -31,6 +31,7 @@ import java.util.Set;
 import java.util.jar.Manifest;
 
 import org.apache.maven.artifact.Artifact;
+import org.apache.maven.model.Plugin;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.logging.Log;
@@ -45,6 +46,7 @@ import org.codehaus.plexus.util.xml.Xpp3Dom;
 import org.sonatype.plexus.build.incremental.BuildContext;
 
 import aQute.bnd.build.Project;
+import aQute.bnd.header.Parameters;
 import aQute.bnd.osgi.Builder;
 import aQute.bnd.osgi.Constants;
 import aQute.bnd.osgi.FileResource;
@@ -155,6 +157,110 @@ public class BndMavenPlugin extends AbstractMojo {
 				log.debug("builder classpath: " + builder.getProperty("project.buildpath"));
 			}
 
+			// If the project dependencies and versions are already available
+			// here, why would we want developers to have to re-specify their
+			// dependencies and their versions in the -includeresource and
+			// Bundle-Classpath sections of the bnd configuration? Especially if
+			// this is a WAB, and we are using this plugin in conjunction with
+			// the maven-war-plugin instead of the maven-jar-plugin, let's
+			// automatically set the -includeresource and Bundle-Classpath based
+			// on the project model (pom.xml). This is a maven plugin after all,
+			// this plugin has all that information without consulting the bnd
+			// configuration.
+			//
+			// Secondly, we can use this opportunity to skip over files that
+			// bndlib adds (because bndlib thinks that -wab means to convert an
+			// OSGi jar to a WAB?? not sure). Whereas, if this plugin is used in
+			// conjunction with the maven-war-plugin, we can use bndlib for what
+			// it is mainly for, I think, which is the calculation of the
+			// MANIFEST.MF and the OSGI-INF declarative services descriptors,
+			// and leave the packaging to the traditional maven-war-plugin.
+
+			boolean skipClassesWebInf = false;
+
+			List<Plugin> buildPlugins = project.getBuildPlugins();
+			for (Plugin plugin : buildPlugins) {
+				if ("maven-war-plugin".equals(plugin.getArtifactId())) {
+
+					log.info("execute: detected the use of the maven-war-plugin for building ...");
+
+					// Can we assume that the maven-war-plugin is being used for
+					// building now? Maybe we need to see if they have
+					// configured the warSourceDirectory instead of using the
+					// standard directory layout:
+					// https://maven.apache.org/guides/introduction/introduction-to-the-standard-directory-layout.html
+
+					String warSourceDirectory = "src/main/webapp";
+					Object configuration = plugin.getConfiguration();
+					if (configuration instanceof Xpp3Dom) {
+						Xpp3Dom xml = (Xpp3Dom) configuration;
+						Xpp3Dom child = xml.getChild("warSourceDirectory");
+						if (child != null) {
+							warSourceDirectory = child.getValue();
+						}
+
+						// TODO
+						// should we always re-set the IncludeResources and
+						// BundleClasspath as implemented below?
+						if (warSourceDirectory.equals(builder.getProperty(Constants.WAB))) {
+
+							skipClassesWebInf = true;
+
+							// Are "provided" artifacts the only ones we do not
+							// need to include?
+							List<String> includeResources = new ArrayList<String>();
+							List<String> bundleClasspaths = new ArrayList<String>();
+							for (Artifact artifact : artifacts) {
+								if (!artifact.getType().equals("jar")) {
+									continue;
+								}
+								if ("provided".equals(artifact.getScope())) {
+									continue;
+								}
+								File file = artifact.getFile().getCanonicalFile();
+								if (file.isDirectory()) {
+									log.info("execute: " + file.getCanonicalPath() + " is a directory");
+								} else {
+									log.info("execute: found artifact file.getName() = " + file.getName());
+									String includeResource = "WEB-INF/lib/" + file.getName() + "=" + file.getName();
+									includeResources.add(includeResource);
+
+									String bundleClasspath = "WEB-INF/lib/" + file.getName();
+									bundleClasspaths.add(bundleClasspath);
+								}
+							}
+							// include the WAB directory
+							includeResources.add(warSourceDirectory);
+
+							Parameters includeResource = builder.getIncludeResource();
+							log.info("execute: includeResource.toString() = " + includeResource.toString());
+
+							log.info("execute: re-setting IncludeResource ...");
+							builder.setIncludeResource(Strings.join(",", includeResources));
+
+							includeResource = builder.getIncludeResource();
+							log.info("execute: includeResource.toString() = " + includeResource.toString());
+
+
+							Parameters bundleClasspath = builder.getBundleClassPath();
+							log.info("execute: bundleClasspath.toString() = " + bundleClasspath.toString());
+
+							log.info("execute: re-setting BundleClassPath ...");
+							builder.setBundleClasspath(Strings.join(",", bundleClasspaths));
+
+							bundleClasspath = builder.getBundleClassPath();
+							log.info("execute: bundleClasspath.toString() = " + bundleClasspath.toString());
+						}
+					}
+
+					// Not sure why folks would invoke the maven-war-plugin
+					// twice ... probably because they want me to feel their
+					// pain, but i refuse. Only checking the first one in the
+					// build section.
+					break;
+				}
+			}
+
 			// Compute bnd sourcepath
 			boolean delta = !buildContext.isIncremental() || !manifestPath.exists();
 			List<File> sourcepath = new ArrayList<File>();
@@ -203,7 +309,7 @@ public class BndMavenPlugin extends AbstractMojo {
 				Jar bndJar = builder.build();
 
 				// Expand Jar into target/classes
-				expandJar(bndJar, classesDir);
+				expandJar(bndJar, classesDir, skipClassesWebInf);
 			} else {
 				log.debug("No build");
 			}
@@ -300,7 +406,7 @@ public class BndMavenPlugin extends AbstractMojo {
 		}
 	}
 
-	private void expandJar(Jar jar, File dir) throws Exception {
+	private void expandJar(Jar jar, File dir, boolean skipClassesWebInf) throws Exception {
 		final long lastModified = jar.lastModified();
 		if (log.isDebugEnabled()) {
 			log.debug(String.format("Bundle lastModified: %tF %<tT.%<tL", lastModified));
@@ -327,9 +433,12 @@ public class BndMavenPlugin extends AbstractMojo {
 					else
 						log.debug(String.format("Creating '%s'", outFile));
 				}
-				Files.createDirectories(outFile.toPath().getParent());
-				try (OutputStream out = buildContext.newFileOutputStream(outFile)) {
-					IO.copy(resource.openInputStream(), out);
+
+				if (!(skipClassesWebInf && outFile.toPath().toString().contains("classes/WEB-INF"))) {
+					Files.createDirectories(outFile.toPath().getParent());
+					try (OutputStream out = buildContext.newFileOutputStream(outFile)) {
+						IO.copy(resource.openInputStream(), out);
+					}
 				}
 			}
 		}
