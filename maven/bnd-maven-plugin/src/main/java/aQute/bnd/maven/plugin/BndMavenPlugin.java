@@ -176,8 +176,6 @@ public class BndMavenPlugin extends AbstractMojo {
 			// MANIFEST.MF and the OSGI-INF declarative services descriptors,
 			// and leave the packaging to the traditional maven-war-plugin.
 
-			boolean skipClassesWebInf = false;
-
 			List<Plugin> buildPlugins = project.getBuildPlugins();
 			for (Plugin plugin : buildPlugins) {
 				if ("maven-war-plugin".equals(plugin.getArtifactId())) {
@@ -199,58 +197,55 @@ public class BndMavenPlugin extends AbstractMojo {
 							warSourceDirectory = child.getValue();
 						}
 
-						// TODO
-						// should we always re-set the IncludeResources and
-						// BundleClasspath as implemented below?
-						if (warSourceDirectory.equals(builder.getProperty(Constants.WAB))) {
+						// Are "provided" artifacts the only ones we do not
+						// need to include?
+						List<String> includeResources = new ArrayList<String>();
+						List<String> bundleClasspaths = new ArrayList<String>();
 
-							skipClassesWebInf = true;
+						// include the BundleClasspath
+						bundleClasspaths.add("WEB-INF/classes");
+						bundleClasspaths.add(".");
 
-							// Are "provided" artifacts the only ones we do not
-							// need to include?
-							List<String> includeResources = new ArrayList<String>();
-							List<String> bundleClasspaths = new ArrayList<String>();
-							for (Artifact artifact : artifacts) {
-								if (!artifact.getType().equals("jar")) {
-									continue;
-								}
-								if ("provided".equals(artifact.getScope())) {
-									continue;
-								}
-								File file = artifact.getFile().getCanonicalFile();
-								if (file.isDirectory()) {
-									log.info("execute: " + file.getCanonicalPath() + " is a directory");
-								} else {
-									log.info("execute: found artifact file.getName() = " + file.getName());
-									String includeResource = "WEB-INF/lib/" + file.getName() + "=" + file.getName();
-									includeResources.add(includeResource);
-
-									String bundleClasspath = "WEB-INF/lib/" + file.getName();
-									bundleClasspaths.add(bundleClasspath);
-								}
+						for (Artifact artifact : artifacts) {
+							if (!artifact.getType().equals("jar")) {
+								continue;
 							}
-							// include the WAB directory
-							includeResources.add(warSourceDirectory);
+							if ("provided".equals(artifact.getScope())) {
+								continue;
+							}
+							File file = artifact.getFile().getCanonicalFile();
+							if (file.isDirectory()) {
+								log.info("execute: " + file.getCanonicalPath() + " is a directory");
+							} else {
+								log.info("execute: found artifact file.getName() = " + file.getName());
+								String includeResource = "WEB-INF/lib/" + file.getName() + "=" + file.getName();
+								includeResources.add(includeResource);
 
-							Parameters includeResource = builder.getIncludeResource();
-							log.info("execute: includeResource.toString() = " + includeResource.toString());
-
-							log.info("execute: re-setting IncludeResource ...");
-							builder.setIncludeResource(Strings.join(",", includeResources));
-
-							includeResource = builder.getIncludeResource();
-							log.info("execute: includeResource.toString() = " + includeResource.toString());
-
-
-							Parameters bundleClasspath = builder.getBundleClassPath();
-							log.info("execute: bundleClasspath.toString() = " + bundleClasspath.toString());
-
-							log.info("execute: re-setting BundleClassPath ...");
-							builder.setBundleClasspath(Strings.join(",", bundleClasspaths));
-
-							bundleClasspath = builder.getBundleClassPath();
-							log.info("execute: bundleClasspath.toString() = " + bundleClasspath.toString());
+								String bundleClasspath = "WEB-INF/lib/" + file.getName();
+								// + ";resolution:=optional";
+								bundleClasspaths.add(bundleClasspath);
+							}
 						}
+
+						Parameters includeResource = builder.getIncludeResource();
+						log.info("execute: includeResource.toString() = " + includeResource.toString());
+
+						log.info("execute: re-setting IncludeResource ...");
+						builder.setIncludeResource(Strings.join(",", includeResources));
+
+						includeResource = builder.getIncludeResource();
+						log.info("execute: includeResource.toString() = " + includeResource.toString());
+
+
+						Parameters bundleClasspath = builder.getBundleClassPath();
+						log.info("execute: bundleClasspath.toString() = " + bundleClasspath.toString());
+
+						log.info("execute: re-setting BundleClassPath ...");
+						builder.setBundleClasspath(Strings.join(",", bundleClasspaths));
+
+						bundleClasspath = builder.getBundleClassPath();
+						log.info("execute: bundleClasspath.toString() = " + bundleClasspath.toString());
+
 					}
 
 					// Not sure why folks would invoke the maven-war-plugin
@@ -309,7 +304,7 @@ public class BndMavenPlugin extends AbstractMojo {
 				Jar bndJar = builder.build();
 
 				// Expand Jar into target/classes
-				expandJar(bndJar, classesDir, skipClassesWebInf);
+				expandJar(bndJar, classesDir);
 			} else {
 				log.debug("No build");
 			}
@@ -406,7 +401,7 @@ public class BndMavenPlugin extends AbstractMojo {
 		}
 	}
 
-	private void expandJar(Jar jar, File dir, boolean skipClassesWebInf) throws Exception {
+	private void expandJar(Jar jar, File dir) throws Exception {
 		final long lastModified = jar.lastModified();
 		if (log.isDebugEnabled()) {
 			log.debug(String.format("Bundle lastModified: %tF %<tT.%<tL", lastModified));
@@ -433,12 +428,9 @@ public class BndMavenPlugin extends AbstractMojo {
 					else
 						log.debug(String.format("Creating '%s'", outFile));
 				}
-
-				if (!(skipClassesWebInf && outFile.toPath().toString().contains("classes/WEB-INF"))) {
-					Files.createDirectories(outFile.toPath().getParent());
-					try (OutputStream out = buildContext.newFileOutputStream(outFile)) {
-						IO.copy(resource.openInputStream(), out);
-					}
+				Files.createDirectories(outFile.toPath().getParent());
+				try (OutputStream out = buildContext.newFileOutputStream(outFile)) {
+					IO.copy(resource.openInputStream(), out);
 				}
 			}
 		}
