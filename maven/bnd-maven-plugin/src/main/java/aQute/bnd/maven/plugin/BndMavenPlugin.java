@@ -213,6 +213,9 @@ public class BndMavenPlugin extends AbstractMojo {
 							if ("provided".equals(artifact.getScope())) {
 								continue;
 							}
+							if ("test".equals(artifact.getScope())) {
+								continue;
+							}
 							File file = artifact.getFile().getCanonicalFile();
 							if (file.isDirectory()) {
 								log.info("execute: " + file.getCanonicalPath() + " is a directory");
