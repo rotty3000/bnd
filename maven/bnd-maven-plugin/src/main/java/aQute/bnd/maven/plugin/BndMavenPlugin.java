@@ -431,9 +431,13 @@ public class BndMavenPlugin extends AbstractMojo {
 					else
 						log.debug(String.format("Creating '%s'", outFile));
 				}
-				Files.createDirectories(outFile.toPath().getParent());
-				try (OutputStream out = buildContext.newFileOutputStream(outFile)) {
-					IO.copy(resource.openInputStream(), out);
+				if (outFile.toPath().toString().contains("classes/WEB-INF")) {
+					log.warn("expandJar: bndlib want's " + outFile.toPath().toString() + " skipping ...");
+				} else {
+					Files.createDirectories(outFile.toPath().getParent());
+					try (OutputStream out = buildContext.newFileOutputStream(outFile)) {
+						IO.copy(resource.openInputStream(), out);
+					}
 				}
 			}
 		}
