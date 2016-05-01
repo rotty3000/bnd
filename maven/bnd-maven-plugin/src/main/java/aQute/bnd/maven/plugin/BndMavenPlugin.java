@@ -60,7 +60,7 @@ import aQute.lib.strings.Strings;
 import aQute.lib.utf8properties.UTF8Properties;
 import aQute.service.reporter.Report.Location;
 
-@Mojo(name = "bnd-process", defaultPhase = LifecyclePhase.PROCESS_CLASSES, requiresDependencyResolution = ResolutionScope.COMPILE)
+@Mojo(name = "bnd-process", defaultPhase = LifecyclePhase.PROCESS_CLASSES, requiresDependencyResolution = ResolutionScope.COMPILE_PLUS_RUNTIME)
 public class BndMavenPlugin extends AbstractMojo {
 
 	private static final String	PACKAGING_POM	= "pom";
@@ -176,11 +176,14 @@ public class BndMavenPlugin extends AbstractMojo {
 			// MANIFEST.MF and the OSGI-INF declarative services descriptors,
 			// and leave the packaging to the traditional maven-war-plugin.
 
+			boolean usingMavenWarPlugin = false;
+
 			List<Plugin> buildPlugins = project.getBuildPlugins();
 			for (Plugin plugin : buildPlugins) {
 				if ("maven-war-plugin".equals(plugin.getArtifactId())) {
 
 					log.info("execute: detected the use of the maven-war-plugin for building ...");
+					usingMavenWarPlugin = true;
 
 					// Can we assume that the maven-war-plugin is being used for
 					// building now? Maybe we need to see if they have
@@ -207,26 +210,21 @@ public class BndMavenPlugin extends AbstractMojo {
 						bundleClasspaths.add(".");
 
 						for (Artifact artifact : artifacts) {
-							if (!artifact.getType().equals("jar")) {
-								continue;
-							}
-							if ("provided".equals(artifact.getScope())) {
-								continue;
-							}
-							if ("test".equals(artifact.getScope())) {
-								continue;
-							}
-							File file = artifact.getFile().getCanonicalFile();
-							if (file.isDirectory()) {
-								log.info("execute: " + file.getCanonicalPath() + " is a directory");
-							} else {
-								log.info("execute: found artifact file.getName() = " + file.getName());
-								String includeResource = "WEB-INF/lib/" + file.getName() + "=" + file.getName();
-								includeResources.add(includeResource);
+							if (artifact.getType().equals("jar")) {
+								if ("compile".equals(artifact.getScope()) || "runtime".equals(artifact.getScope())) {
+									File file = artifact.getFile().getCanonicalFile();
+									if (file.isDirectory()) {
+										log.info("execute: " + file.getCanonicalPath() + " is a directory");
+									} else {
+										log.info("execute: found artifact file.getName() = " + file.getName());
+										String includeResource = "WEB-INF/lib/" + file.getName() + "=" + file.getName();
+										includeResources.add(includeResource);
 
-								String bundleClasspath = "WEB-INF/lib/" + file.getName();
-								// + ";resolution:=optional";
-								bundleClasspaths.add(bundleClasspath);
+										String bundleClasspath = "WEB-INF/lib/" + file.getName();
+										// + ";resolution:=optional";
+										bundleClasspaths.add(bundleClasspath);
+									}
+								}
 							}
 						}
 
@@ -310,6 +308,22 @@ public class BndMavenPlugin extends AbstractMojo {
 				expandJar(bndJar, classesDir);
 			} else {
 				log.debug("No build");
+			}
+
+			if (usingMavenWarPlugin) {
+				// copy the OSGI-INF directory to a useful place for a wab
+				File osgiInf = IO.getFile(project.getBuild().getOutputDirectory() + "/OSGI-INF");
+				if (osgiInf.exists()) {
+					File buildDir = IO.getFile(project.getBuild().getDirectory());
+					File destination = IO.getFile(
+							buildDir.getCanonicalPath() +
+									"/" + project.getBuild().getFinalName() +
+									"/OSGI-INF"
+					);
+					IO.copy(osgiInf, destination);
+				} else {
+					log.warn("Build plans to use the maven-war-plugin, but no OSGI-INF directory was created. Maybe there is no use of declarative services?");
+				}
 			}
 
 			// Finally, report
@@ -431,9 +445,7 @@ public class BndMavenPlugin extends AbstractMojo {
 					else
 						log.debug(String.format("Creating '%s'", outFile));
 				}
-				if (outFile.toPath().toString().contains("classes/WEB-INF")) {
-					log.warn("expandJar: bndlib want's " + outFile.toPath().toString() + " skipping ...");
-				} else {
+				if (!outFile.toPath().toString().contains("classes/WEB-INF")) {
 					Files.createDirectories(outFile.toPath().getParent());
 					try (OutputStream out = buildContext.newFileOutputStream(outFile)) {
 						IO.copy(resource.openInputStream(), out);
