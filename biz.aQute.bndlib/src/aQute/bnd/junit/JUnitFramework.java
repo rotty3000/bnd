@@ -38,6 +38,7 @@ import aQute.bnd.osgi.Builder;
 import aQute.bnd.osgi.Descriptors.PackageRef;
 import aQute.bnd.osgi.Jar;
 import aQute.bnd.osgi.JarResource;
+import aQute.bnd.osgi.Processor;
 import aQute.bnd.osgi.Resource;
 import aQute.bnd.service.Strategy;
 import aQute.bnd.version.VersionRange;
@@ -77,6 +78,7 @@ public class JUnitFramework implements AutoCloseable {
 	public final File							projectDir;
 	public Workspace							workspace;
 	public Project								project;
+	public final File						targetDir;
 
 	/**
 	 * Start a framework assuming the current working directory is the project
@@ -88,23 +90,72 @@ public class JUnitFramework implements AutoCloseable {
 
 	/**
 	 * Start a framework while providing a project directory.
-	 * 
+	 *
 	 * @param projectDir
 	 */
 	public JUnitFramework(File projectDir) {
 		this.projectDir = projectDir.getAbsoluteFile();
 
 		try {
-			Project p = getProject();
-			File bin_test = p.getTestOutput();
+			this.workspace = Workspace.getWorkspace(projectDir.getParentFile());
+			this.project = this.workspace.getProjectFromFile(projectDir);
+			assert project.check();
+			this.targetDir = this.project.getTarget();
+			File bin_test = this.project.getTestOutput();
 			this.bin_test = new Jar(bin_test);
 
-			String extra = getExtra();
+			List<File> classPathFiles = new ArrayList<>();
 
-			Map<String,String> props = new HashMap<>();
+			for (Container c : project.getBuildpath()) {
+				assert c.getError() == null;
+				classPathFiles.add(c.getFile());
+			}
+			for (Container c : project.getTestpath()) {
+				assert c.getError() == null;
+				classPathFiles.add(c.getFile());
+			}
+
+			String extra = getExtra(classPathFiles);
+
+			Map<String, String> props = new HashMap<>();
 			props.put(Constants.FRAMEWORK_SYSTEMPACKAGES_EXTRA, extra);
 
-			File storage = IO.getFile(p.getTarget(), "fw");
+			File storage = IO.getFile(targetDir, "fw");
+			IO.delete(storage);
+
+			props.put(Constants.FRAMEWORK_STORAGE, storage.getAbsolutePath());
+			props.put(Constants.FRAMEWORK_STORAGE_CLEAN, Constants.FRAMEWORK_STORAGE_CLEAN_ONFIRSTINIT);
+
+			FrameworkFactory factory = getFactory();
+
+			framework = factory.newFramework(props);
+			framework.init();
+			framework.start();
+			this.context = framework.getBundleContext();
+		} catch (Exception e) {
+			throw Exceptions.duck(e);
+		}
+	}
+
+	public JUnitFramework(List<File> classPathBundles, File runFile, File binTestDirectory, File frameworkTempDir) {
+		try {
+			Processor processor = new Processor();
+			processor.setProperties(runFile);
+
+			Workspace standaloneWorkspace = Workspace.createStandaloneWorkspace(processor, runFile.toURI());
+
+			this.workspace = standaloneWorkspace;
+			this.project = new Project(this.workspace, null, runFile);
+			this.projectDir = this.project.getBase();
+			this.targetDir = frameworkTempDir;
+			this.bin_test = new Jar(binTestDirectory);
+
+			String extra = getExtra(classPathBundles);
+
+			Map<String, String> props = new HashMap<>();
+			props.put(Constants.FRAMEWORK_SYSTEMPACKAGES_EXTRA, extra);
+
+			File storage = IO.getFile(targetDir, "fw");
 			IO.delete(storage);
 
 			props.put(Constants.FRAMEWORK_STORAGE, storage.getAbsolutePath());
@@ -125,16 +176,11 @@ public class JUnitFramework implements AutoCloseable {
 	 * Calculate the extra packages by calculating the import of the test
 	 * classes.
 	 */
-	private String getExtra() throws Exception {
+	private String getExtra(Collection<File> classPathFiles) throws Exception {
 		try (Analyzer a = new Analyzer()) {
 
-			for (Container c : getProject().getBuildpath()) {
-				assert c.getError() == null;
-				a.addClasspath(c.getFile());
-			}
-			for (Container c : getProject().getTestpath()) {
-				assert c.getError() == null;
-				a.addClasspath(c.getFile());
+			for (File classPathFile : classPathFiles) {
+				a.addClasspath(classPathFile);
 			}
 
 			a.setJar(bin_test);
@@ -276,7 +322,7 @@ public class JUnitFramework implements AutoCloseable {
 	}
 
 	public void addBundles(File bndrun) throws Exception {
-		Run run = Run.createRun(getWorkspace(), bndrun);
+		Run run = Run.createRun(workspace, bndrun);
 		List<Bundle> bundles = new ArrayList<>();
 		for (Container c : run.getRunbundles()) {
 			assert c.getError() == null;
@@ -287,20 +333,10 @@ public class JUnitFramework implements AutoCloseable {
 	}
 
 	public Workspace getWorkspace() throws Exception {
-		if (workspace == null) {
-			workspace = Workspace.getWorkspace(projectDir.getParentFile());
-			// workspace.setOffline(true);
-			// TODO fix the loading error
-			// assertTrue(workspace.check());
-		}
 		return workspace;
 	}
 
 	public Project getProject() throws Exception {
-		if (project == null) {
-			project = getWorkspace().getProjectFromFile(projectDir);
-			assert project.check();
-		}
 		return project;
 	}
 
@@ -314,7 +350,8 @@ public class JUnitFramework implements AutoCloseable {
 		Parameters p = new Parameters(spec);
 		List<Bundle> bundles = new ArrayList<>();
 		for (Map.Entry<String,Attrs> e : p.entrySet()) {
-			Container c = getProject().getBundle(e.getKey(), e.getValue().get("version"), Strategy.HIGHEST,
+			Container c = project.getBundle(e.getKey(), e.getValue()
+				.get("version"), Strategy.HIGHEST,
 					e.getValue());
 			if (c.getError() != null) {
 				throw new RuntimeException(c.getError());
